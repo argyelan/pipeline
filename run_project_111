@@ -1,0 +1,457 @@
+#!/bin/sh
+# setup_subject: R. Poldrack, 1/6/04
+# edited by A.Bato for MEND (Karlsgodt) project at ZHH 7/19/13
+# edited by M.Argyelan for prj 256 at ZHH 7/14/14
+# edited by M.Argyelan for prj 256 at ZHH 12/15/14 with scrubbing
+# edited by M.Argyelan for prj 111 at ZHH 05/06/2015: since in this project we do need convert from dicom we make it a little different, -a inputs are anatomical image and -r  resting state image 
+#example: run_project_111 -r resting_image.nii.gz -a anatomical_image.nii.gz [-w (PROCESSANAT) -c (RUN_MCFLIRT) -x (RUN_BET) -D (R_DIAGNOSTIC) -I (RUN_RESTPROC) -R (DR_RESTPROC) -A (ALFF_RESTPROC) -S (SEED_RESTPROC)]  
+
+
+# set various paths here
+RAW_DIR='/nethome/amiklos/work/ASH/ALFF_EEG'
+DCMNII_CONVERTER='/usr/local/bin/dcm2nii'
+FSLD_RAW_FILE='/nethome/amiklos/public_html/myscript/virtualbrain/Pipeline/Katie_pipeline_scripts/RScripts/fsld_raw_071714.R'
+R_dir='/usr/bin/R'
+R_BIN='R'
+prj=111
+
+FSLUTILPREFIX='fsl'
+echo "util prefix: ${FSLUTILPREFIX}"
+
+#establishes current date and time
+DATE="`date +%d%b%Y`"
+TIME="`date +%H-%M`"
+
+#allows you to set your own mcflirt or melodic arguments
+MCFLIRT_ARGS="-plots -report -mats"
+MELODIC_ARGS="--report"
+
+USAGE="
+USAGE: setup_subject_nifti_MEND -b <base_dir> -s <scan id> -x -c -w -D -I -h -g
+
+Required arguments:
+  -b base_dir: the project directory in which the subjects 
+              dir will be created
+               (this MUST be an absolute path, i.e., starting with /)
+  -s subject:  the scan ID (e.g. 20080691643)
+
+Optional arguments:
+[general flags]:
+  -t:          run in test mode - dont execute commands    
+[processing operations]:
+  -c:          run MCLFIRT motion correction on 4D image ***
+  -m:          run MELODIC ICA on motion-corrected 4D image ***
+  -x:          run BET on the motion-corrected 4D data and standard data ***
+  -w:          Preprocess MP-RAGE (align, BET, and bias correction) 
+  -D:          Run raw data diagnostics ***
+  -z:          name of file specifying definitions for MCFLIRT_ARGS and MELODIC_ARGS
+  -I	       Run Resting State Preprocessing
+  -h	       Run DTI preprocessing
+ 
+[debabeler options]:
+  -d:          skip debabeling (*if have already converted and need to do other steps)
+  -j:          location of debabeler .jar file
+[file output options]:
+  -k:          dont automatically delete DICOM data after conversion
+  -3:          Keep 3D data after 4D conversion
+  -f:          dont fix raw directory names (leave extra numbers)
+  -e:          skip copying of data from data/611
+  -a:          anatomical image
+  -q           skip entry of DICOM info into database
+  -r 		   resting state image
+
+ [grid options]:
+  -G           submit compute tasks to the Grid (default)
+  -L           run Locally (do not submit compute tasks to the Grid)
+  -S			SCRUBBING: writes out zero_pads_keeps_num_...identifies.._FD_MA.txt with the frames that has to be deleted.
+see www.func.ucla.edu for more info
+
+"
+
+
+
+if [ $# -eq 0 ]
+then
+  echo "$USAGE"
+  exit
+fi
+
+TESTMODE=0
+NOSCP=0
+NODEBABELER=0
+FIXDIRNAMES=1
+RUN_MCFLIRT=0
+RUN_MELODIC=0
+RUN_BET=0
+UNWARP_MPRAGE=0
+DELETE_DICOM=0
+DB_DOWNLOAD=0
+DELETE_3D=1
+FSLCONVERT=1  # create 4D analyze by default
+BOLDTAG='fmri'
+MPRAGE_TAG='MPRAGE'
+FSL_OPT_FILE=""
+USE_DICOM_BACKUP=0
+PROCESS_ANAT=0
+SGE_RESUBMIT=-1
+R_DIAGNOSTICS=0
+RUN_RESTPROC=0
+DR_RESTPROC=0
+ALFF_RESTPROC=0
+SEED_RESTPROC=0
+RUN_DTIPROC=0
+RUN_FS=0
+SCRUBBING=0
+
+DEFAULT_FILETYPE='NIFTI_GZ'
+FSLOUTPUTTYPE=$DEFAULT_FILETYPE
+echo "using FSL Output Type: ${FSLOUTPUTTYPE}"
+IMG_SUFFIX='.nii.gz'
+echo "using $IMG_SUFFIX as output file type"
+
+# set up arguments here
+while getopts b:u:a:j:r:z:gsItqcekhxywmdfi3GLSARD o 
+do  case "$o" in
+   b)    BASEDIR="$OPTARG";;
+   a)    anat="$OPTARG";;
+   r)    resting="$OPTARG";;
+   g)    RUN_FS=1;;
+   s)    SCRUBBING=1;;
+   t)    TESTMODE=1;;
+   e)    NOSCP=1;;
+   d)    NODEBABELER=1;;
+   q)    DB_DOWNLOAD=0;;
+   j)    DEBABELER_JAR="$OPTARG";;
+   f)    FIXDIRNAMES=0;;
+   u)    DICOM_USER="$OPTARG";;
+   c)    RUN_MCFLIRT=1;FSLCONVERT=1;;
+   x)    RUN_BET=1;FSLCONVERT=1;;
+   m)    RUN_MELODIC=1;FSLCONVERT=1;;
+   k)    DELETE_DICOM=0;;
+   3)    DELETE_3D=0;;
+   z)    FSL_OPT_FILE="$OPTARG";;
+   w)    PROCESS_ANAT=1;;
+   h)    RUN_DTIPROC=1;;
+   y)    USE_DICOM_BACKUP=1;;
+   i)    IMG_SUFFIX="$OPTARG";;
+   G)    SGE_RESUBMIT=1;;
+   D)    R_DIAGNOSTICS=1;;
+   I)    RUN_RESTPROC=1;;
+   S)    SEED_RESTPROC=1;;
+   A)    ALFF_RESTPROC=1;;
+   R)    DR_RESTPROC=1;;
+   L)    unset SGE_RESUBMIT;;
+   [?])  print >&2 "$USAGE"
+         exit 1;;
+ esac
+done
+
+f_anat=`readlink -f ${anat}`
+f_resting=`readlink -f ${resting}`
+
+dir_anat=`dirname ${f_anat}`
+dir_resting=`dirname ${f_resting}`
+
+trunc_anat=`basename ${f_anat} .nii.gz`
+trunc_resting=`basename ${f_resting} .nii.gz`
+
+DATE="`date +%d%b%Y`"
+TIME="`date +%H-%M`"
+LOGFILE="${dir_resting}/log.${DATE}_${TIME}"
+
+#####################################################################################################################################
+##
+## SWITCHING TO FSL 5
+##
+#####################################################################################################################################
+
+source fsl5
+
+echo FSL VERSION:
+which fsl
+#####################################################################################################################################
+##
+## PROCESSING HI RES STRUCTURAL
+##
+#####################################################################################################################################
+
+
+
+if [ $PROCESS_ANAT -eq 1 -a $TESTMODE -eq 0 ]; then
+  echo "processing STRUCT..."
+  cd ${dir_anat}
+  echo "Running bet with -B option (for neck cleanup) on the grid."
+  bet ${f_anat} ${dir_anat}/${trunc_anat}_brain -B -f 0.33
+     
+      # note -f=3.3 was confirmed to work well with Trio and Sonata MPRAGES -DG 1/27/09
+      # also note that this job used to be submitted to the grid b/c it takes a long time to compute
+     #### wait until BET completes before terminating script
+  echo -n "Waiting for brain extraction to finish..."
+  echo "done."
+  echo -e "bet ${f_anat} ${dir_anat}/${trunc_anat}_brain -B -f 0.33 - complete:" `date` | tee -a $LOGFILE
+fi
+
+
+
+#####################################################################################################################################
+##
+## PROCESSING FUNCTIONAL SCANS
+##
+#####################################################################################################################################
+
+# run mcflirt
+if [ $RUN_MCFLIRT -eq 1  -a $TESTMODE -eq 0 ]; then
+  echo "running mcflirt on resting..."
+	cd ${dir_resting}
+	mcflirt -in ${f_resting} $MCFLIRT_ARGS
+   echo "mcflirt -in ${f_resting}  $MCFLIRT_ARGS" >> $LOGFILE
+fi
+
+#exit 0
+
+# run betfunc2 - this version creates additional diagnostic files
+if [ $RUN_BET -eq 1  -a $TESTMODE -eq 0 ]; then
+  echo "running BET on motion corrected resting ..."
+  cd ${dir_resting}
+  
+  echo "/nethome/amiklos/public_html/myscript/virtualbrain/Pipeline/betfunc2_lij ${dir_resting}/${trunc_resting}.nii.gz ${dir_resting}/${trunc_resting}_brain.nii.gz" >> $LOGFILE
+  /nethome/amiklos/public_html/myscript/virtualbrain/Pipeline/betfunc2_lij ${dir_resting}/${trunc_resting}.nii.gz ${dir_resting}/${trunc_resting}_brain.nii.gz
+  echo $BET_MCF_FILENAME
+  echo "/nethome/amiklos/public_html/myscript/virtualbrain/Pipeline/betfunc2_lij ${dir_resting}/${trunc_resting}_mcf.nii.gz ${dir_resting}/${trunc_resting}_mcf_brain.nii.gz" >> $LOGFILE
+  /nethome/amiklos/public_html/myscript/virtualbrain/Pipeline/betfunc2_lij ${dir_resting}/${trunc_resting}_mcf.nii.gz ${dir_resting}/${trunc_resting}_mcf_brain.nii.gz
+
+fi
+
+#exit 0
+
+#if [ $FSLCONVERT -eq 1 -a $RUN_MELODIC -eq 1  -a $TESTMODE -eq 0 ]
+#then
+#  echo "running MELODIC on bold dirs..."
+ # cd $SUBDIR/raw
+#  for i in $BOLDDIRS
+#  do
+#    echo starting MELODIC on $SUBDIR
+#    cd $SUBDIR/raw/$i
+    #MCF_FILENAM=`
+#    MCF_FILENAME=`ls ${SUBCODE}_${BOLDTAG}*_mcf_brain$IMG_SUFFIX`
+#    if [ ! -s $MCF_FILENAME ]
+#    then
+#      echo "$MCF_FILENAME does not exist, trying mcf file"
+#      MCF_FILENAME=`ls ${SUBCODE}_${BOLDTAG}*_mcf$IMG_SUFFIX`
+#    fi
+#    if [ ! -s $MCF_FILENAME ]
+#    then
+#      echo "$MCF_FILENAME does not exist, trying original 4D file"
+#      MCF_FILENAME=`ls ${SUBCODE}_${BOLDTAG}*$IMG_SUFFIX`
+#    fi
+#    melodic $MELODIC_ARGS  -i $MCF_FILENAME
+#    echo "melodic  $MELODIC_ARGS  -i $MCF_FILENAME" >> $LOGFILE
+#  done
+#fi
+
+if [ $R_DIAGNOSTICS -eq 1 -a  $TESTMODE -eq 0 ]; then
+  echo "running R diagnostics ..."
+  cd ${dir_resting}
+  MCF_FILENAME=`readlink -f ${trunc_resting}_mcf.nii.gz`
+	#MCF_FILENAME_ROOT=`basename ${MCF_FILENAME} .nii.gz`
+	#MASK_MCF_FILENAME=${MCF_FILENAME_ROOT}_brain_mask.nii.gz
+	#ND_MCF_FILENAME=nodummy_resting_mcf.nii.gz
+    #fslroi ${MCF_FILENAME} ${ND_MCF_FILENAME}  4 149
+	echo "$MCF_FILENAME"
+    if [ ! -s $MCF_FILENAME ]; then
+      echo "$MCF_FILENAME does not exist, skipping this run"
+      continue
+    fi
+	NO_DUMMIES=4
+	#R_LIBS=/misc/Libraries/R:/nethome/amiklos/R #this should be solved
+    echo "source('${FSLD_RAW_FILE}');fsld_raw('${MCF_FILENAME}',${NO_DUMMIES})" | $R_BIN --no-save
+    echo "source('${FSLD_RAW_FILE}');fsld_raw('${MCF_FILENAME}',${NO_DUMMIES})" >> $LOGFILE
+    #echo "source('${FSLD_RAW_FILE}');fsld_raw('${ND_MCF_FILENAME}','${MASK_MCF_FILENAME}')" | $R_BIN --no-save
+    #echo "source('${FSLD_RAW_FILE}');fsld_raw('${ND_MCF_FILENAME}','${MASK_MCF_FILENAME}')" >> $LOGFILE
+    gzip *nii
+fi
+
+#exit 0
+
+########################################################
+#DVARS: this is a little bit shifted here since we need the _res.nii.gz
+########################################################
+if [ $R_DIAGNOSTICS -eq 1 -a  $TESTMODE -eq 0 ]; then
+  echo "running DVARS diagnostics ..."
+  	cd ${dir_resting}
+	file=`readlink -f ${trunc_resting}_mcf.nii.gz`
+	/nethome/amiklos/public_html/myscript/virtualbrain/dvars -all $file ${dir_resting}/dvars_${trunc_resting}.txt
+	echo "/nethome/amiklos/public_html/myscript/virtualbrain/dvars -all $file ${dir_resting}/dvars_${trunc_resting}.txt" >> $LOGFILE 
+fi
+
+
+#####################################################################################################################################
+##
+## MOTPAR FILES
+##
+#####################################################################################################################################
+if [ $RUN_MCFLIRT -eq 1  -a $TESTMODE -eq 0 ]; then
+  cd ${dir_resting}
+  
+	echo creating files...
+
+	cat ${trunc_resting}_mcf.par | awk -F " " '{print $1}' > motion1.txt
+	cat ${trunc_resting}_mcf.par | awk -F " " '{print $2}' > motion2.txt
+	cat ${trunc_resting}_mcf.par | awk -F " " '{print $3}' > motion3.txt
+	cat ${trunc_resting}_mcf.par | awk -F " " '{print $4}' > motion4.txt
+	cat ${trunc_resting}_mcf.par | awk -F " " '{print $5}' > motion5.txt
+	cat ${trunc_resting}_mcf.par | awk -F " " '{print $6}' > motion6.txt
+
+	echo creating nodummy files...
+	for dir in 1 2 3 4 5 6; do
+	   echo ${dir}
+	   awk ' NR>4 ' motion${dir}.txt > motion${dir}_nodummy.txt
+	   done
+
+ 
+fi
+#exit 0
+
+#####################################################################################################################################
+##
+## RESTING STATE PROCESSING
+##
+#####################################################################################################################################
+
+    #restscripts_path=/analysis/Karlsgodt/pipeline_scripts/resting/
+	restscripts_path=/nethome/amiklos/public_html/myscript/virtualbrain/Pipeline/Katie_pipeline_scripts/resting/
+
+####### SWITCHING TO FSL4 for Resting State Processing ##############################################################################
+
+    source fsl4
+    echo FSL VERSION:
+    which fsl
+
+
+    echo processing Resting State...
+    echo
+
+
+if [ $RUN_RESTPROC -eq 1 -a $TESTMODE -eq 0 ]; then 
+	cd ${dir_resting}
+
+
+
+		#get rid of dummies in r_func, in the main we have the dummies, just call the parameters 4 149 146!
+
+		fslroi ${f_resting}  ${dir_resting}/nodummy_${trunc_resting}  4 149
+		echo "fslroi ${f_resting}  ${dir_resting}/nodummy_${trunc_resting}  4 149" >> $LOGFILE 
+		
+		echo preprocessing Resting data....#here decide if it really starts from 0, if not from 4??
+		
+		${restscripts_path}/0_preprocess_Argyelan.sh ${restscripts_path} ${dir_anat} ${dir_resting} /usr/local/fsl/data/standard/MNI152_T1_2mm_brain.nii.gz ${trunc_anat} ${trunc_resting} 4 149 146 2.0 akarmi | tee -a ${LOGFILE} # at the place of aakrmi there was subject in the past, but I try to avoid using it, so in this version there is no subject
+fi
+postprocessed_im=$(ls ${dir_resting}/*NG_res2standard.nii.gz)
+
+if [ $DR_RESTPROC -eq 1 -a $TESTMODE -eq 0 ]; then 	
+	cd ${dir_resting}
+		
+		
+		if [ -f "${postprocessed_im}" ]; then
+			echo "Running dual regression: ${restscripts_path}/8_singlesubjectDR_Karlsgodt.sh ${dir_resting} akarmi"
+			${restscripts_path}/8_singlesubjectDR_Argyelan.sh ${dir_resting} G | tee -a ${LOGFILE} #akarmi is not used G: version when global is removed, NG: version when global is not removed
+			${restscripts_path}/8_singlesubjectDR_Argyelan.sh ${dir_resting} NG | tee -a ${LOGFILE} #akarmi is not used G: version when global is removed, NG: version when global is not removed
+		else
+			echo "DR did not run..."
+		fi
+fi			
+			
+			
+if [ $ALFF_RESTPROC -eq 1 -a $TESTMODE -eq 0 ]; then 	
+	cd ${dir_resting}
+	if [ -f "${postprocessed_im}" ]; then
+			echo "Running ALFF/fALFF: "
+			${restscripts_path}/7_singlesubjectfALFF_Argyelan.sh ${dir_resting} ${dir_resting}/r_reg ${trunc_resting} 150 2.0 /usr/local/fsl/data/standard/MNI152_T1_2mm_brain.nii.gz akarmi | tee -a ${LOGFILE} #akarmi is not used
+			#in 7_singlesubjectfALFF_Karlsgodt there is not importance of rest_name...
+	else
+			echo "(f)ALFF did not run..."
+	fi
+fi
+
+if [ $SEED_RESTPROC -eq 1 -a $TESTMODE -eq 0 ]; then 	
+	cd ${dir_resting}
+	if [ -f "${postprocessed_im}" ]; then
+			echo running RSFC...
+			#${restscripts_path}/6_singlesubjectRSFC_Karlsgodt.sh ${SUBDIR}/raw/${dir}/r_func ${SUBDIR}/raw/${dir}/r_reg ${rest_name} /usr/local/fsl/data/standard/MNI152_T1_2mm_brain.nii.gz ${SUBCODE}_${GRID} | tee ${SUBDIR}/notes/resting_RSFC.log
+			${restscripts_path}/6_singlesubjectRSFC_Argyelan_DiMartino.sh ${dir_resting} ${dir_resting}/r_reg ${trunc_resting} /usr/local/fsl/data/standard/MNI152_T1_2mm_brain.nii.gz NG | tee -a ${LOGFILE} # G: version when global is removed, NG: version when global is not removed
+			${restscripts_path}/6_singlesubjectRSFC_Argyelan_DiMartino.sh ${dir_resting} ${dir_resting}/r_reg ${trunc_resting} /usr/local/fsl/data/standard/MNI152_T1_2mm_brain.nii.gz G | tee -a ${LOGFILE} # G: version when global is removed, NG: version when global is not removed
+		
+		else
+			echo "Seed based did not run..."
+		fi
+fi
+
+#idaig
+exit 0			
+################################################################
+			#here we want add a scrubbed version...
+			#scrubbed
+################################################################
+
+if [ $SCRUBBING -eq 1 ]; then
+	
+	cd $SUBDIR/raw 
+	TEMP=`ls -1 | grep Resting`
+	
+	for dir in $TEMP; do
+		cd ${SUBDIR}/raw/${dir}
+		fullrest_name=`ls *${dir}.nii.gz`
+		rest_name="${fullrest_name%.n*}"
+		if [ ! -d ${SUBDIR}/raw/${dir}/r_func/scrubbed ]; then
+		  DIFI=`readlink -m ${SUBDIR}/raw/${dir}/all_displacement_*.par`
+		  ZPFD=`readlink -m ${SUBDIR}/raw/${dir}/zero_pad_keep_nums_*_FD_MA.txt`
+		  R --vanilla --args dispfile $DIFI nof 146  < /nethome/amiklos/public_html/myscript/virtualbrain/Pipeline/Katie_pipeline_scripts/RScripts/make_keep_nums_MA.R > ${SUBDIR}/notes/make_keep_nums_MA.log
+		  /nethome/amiklos/public_html/myscript/virtualbrain/Pipeline/Mumford_resting/delete_vols_MA.sh ${SUBDIR}/raw/${dir}/r_func ${ZPFD}
+		fi
+		 
+		${restscripts_path}/6_singlesubjectRSFC_DiMartino_scrubbed.sh ${SUBDIR}/raw/${dir}/r_func ${SUBDIR}/raw/${dir}/r_reg ${rest_name} /usr/local/fsl/data/standard/MNI152_T1_2mm_brain.nii.gz ${SUBCODE}_${GRID} | tee -a ${SUBDIR}/notes/resting_RSFC.log
+	done
+
+fi
+
+#####################################################################################################################################
+##
+## DTI PROCESSING
+##
+#####################################################################################################################################
+
+#before running these make compaitbel with more than one DTI...
+
+if [ $RUN_DTIPROC -eq 1 -a $TESTMODE -eq 0 ]; then
+
+    echo preprocessing DTI...
+    echo
+
+    DTIscripts_path=/nethome/amiklos/public_html/myscript/virtualbrain/Pipeline/Katie_pipeline_scripts/DTI/
+
+    echo "${DTIscripts_path}/DTI_preproc_Karlsgodt.sh ${BASEDIR} ${SUBCODE}_${GRID}" | batch
+
+    echo
+    echo DTI preprocessing is batched!
+
+fi
+
+#####################################################################################################################################
+##
+## FREESURFER PROCESSING
+##
+#####################################################################################################################################
+
+if [ $RUN_FS -eq 1 -a $TESTMODE -eq 0 ]; then
+
+  echo running all Freesurfer processes...
+  echo
+
+  FSscripts_path=/nethome/amiklos/public_html/myscript/virtualbrain/Pipeline/Katie_pipeline_scripts/freesurfer/
+  cd ${BASEDIR}
+  group=${PWD##*/}
+
+  echo "${FSscripts_path}/FS_run.sh ${BASEDIR} ${SUBCODE}_${GRID} ${group}" | batch
+
+
+fi

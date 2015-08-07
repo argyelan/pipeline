@@ -1,0 +1,238 @@
+#!/bin/sh
+#example: run_project_dti -d dti_image.nii.gz -a anatomical_image.nii.gz [-w (PROCESSANAT) -c (RUN_DTIFIT) -x (RUN_BEDPOSTX)]
+
+
+# set various paths here
+
+
+#establishes current date and time
+
+
+USAGE="
+USAGE: run_project_dti -d dti_image.nii.gz -a anatomical_image.nii.gz [-w (PROCESSANAT) -c (RUN_DTIFIT) -x (RUN_BEDPOSTX)]
+
+
+see ... for more info
+
+"
+
+
+
+if [ $# -eq 0 ]
+then
+  echo "$USAGE"
+  exit
+fi
+
+TESTMODE=0
+RUN_BEDPOSTX=0
+RUN_DTIFIT=0
+PROCESS_ANAT=0
+
+DEFAULT_FILETYPE='NIFTI_GZ'
+FSLOUTPUTTYPE=$DEFAULT_FILETYPE
+echo "using FSL Output Type: ${FSLOUTPUTTYPE}"
+IMG_SUFFIX='.nii.gz'
+echo "using $IMG_SUFFIX as output file type"
+
+# set up arguments here
+while getopts d:a:twcx o 
+do  case "$o" in
+   a)    anat="$OPTARG";;
+   d)    dti="$OPTARG";;
+   t)    TESTMODE=1;;
+   c)    RUN_DTIFIT=1;;
+   x)    RUN_BEDPOSTX=1;;
+   w)    PROCESS_ANAT=1;;
+   [?])  print >&2 "$USAGE"
+         exit 1;;
+ esac
+done
+
+f_anat=`readlink -f ${anat}`
+f_dti=`readlink -f ${dti}`
+
+dir_anat=`dirname ${f_anat}`
+dir_dti=`dirname ${f_dti}`
+
+trunc_anat=`basename ${f_anat} .nii.gz`
+trunc_dti=`basename ${f_dti} .nii.gz`
+
+DATE="`date +%Y%m%d`"
+TIME="`date +%H%M`"
+
+
+#BASEDIR=$1
+#id=$2
+
+#####################################################################################
+#####################################################################################
+
+
+
+#full_iname=`ls *DTI.nii.gz`
+#iname="${full_iname%.n*}"
+
+if [ -f ${f_dti} ];  then 
+
+
+LOGFILE="${dir_dti}/processing_log.${DATE}_${TIME}"
+  echo "Logging command output to:
+  $LOGFILE"
+  
+echo "DATE: $DATE   TIME: $TIME" | tee -a $LOGFILE
+echo "Basedir is ${dir_dti}" | tee -a $LOGFILE
+
+
+#####################################################################################
+#
+# EDDY CORRECT
+#
+#####################################################################################
+if [ $RUN_DTIFIT -eq 1 -a $TESTMODE -eq 0 ]; then
+
+	echo eddy_correct on ${trunc_dti}
+	pwd
+	echo " " >> $LOGFILE
+	echo "eddy_correct ${f_dti} ${dir_dti}/ec_${trunc_dti} 0" | tee -a $LOGFILE
+	eddy_correct ${f_dti} ${dir_dti}/ec_${trunc_dti} 0 
+
+	echo " " >> $LOGFILE
+	echo "fslroi ${f_dti} ${dir_dti}/b0_${trunc_dti} 1 1" | tee -a $LOGFILE
+	fslroi ${f_dti} ${dir_dti}/b0_${trunc_dti} 1 1
+
+
+#extract brain with BET
+	echo BET on ${trunc_dti}
+	echo " " >> $LOGFILE
+	echo "bet2 ${dir_dti}/b0_${trunc_dti}.nii.gz ${dir_dti}/b0mask_${trunc_dti} -f .25 -n -m " | tee -a $LOGFILE
+	bet2 ${dir_dti}/b0_${trunc_dti}.nii.gz ${dir_dti}/b0mask_${trunc_dti} -f .25 -n -m
+
+
+## -f: fractional intensity threshold (0->1); default=0.5; smaller values give larger brain outline estimates
+## -n: don't generate the default brain image output
+## -m: generate binary brain mask
+
+	bmask="${dir_dti}/b0mask_${trunc_dti}_mask.nii.gz"
+
+	echo running DTIFIT
+
+	if [ -d ${dir_dti}/DTIFIT ]; then echo "DTIFIT already exists"; else mkdir ${dir_dti}/DTIFIT; fi
+
+
+	echo "dtifit -w --save_tensor -k ${dir_dti}/ec_${trunc_dti}.nii.gz -o ${dir_dti}/DTIFIT/DFit_${trunc_dti} -m ${bmask} -r ${dir_dti}/${trunc_dti}.bvec -b ${dir_dti}/${trunc_dti}.bval " | tee -a $LOGFILE
+	dtifit -w --save_tensor -k ${dir_dti}/ec_${trunc_dti}.nii.gz -o ${dir_dti}/DTIFIT/DFit_${trunc_dti} -m ${bmask} -r ${dir_dti}/${trunc_dti}.bvec -b ${dir_dti}/${trunc_dti}.bval
+
+fi
+
+#  input       output      mask        bvec  bval 
+#        http://www.fmrib.ox.ac.uk/fsl/fdt/fdt_dtifit.html
+
+#####################################################################################
+#
+# BEDPOST
+#
+#####################################################################################
+if [ $RUN_BEDPOSTX -eq 1 -a $TESTMODE -eq 0 ]; then 
+
+	echo Bedpost prep
+
+	if [ -d ${dir_dti}/BEDPOSTX ]; then 
+		echo "BEDPOSTX already exists, did not run" 
+	else 
+		mkdir ${dir_dti}/BEDPOSTX
+		bedpostdir="${dir_dti}/BEDPOSTX"
+		bmask="${dir_dti}/b0mask_${trunc_dti}_mask.nii.gz"
+	
+		cp ${dir_dti}/ec_${trunc_dti}.nii.gz ${bedpostdir}/data.nii.gz
+		cp ${bmask} ${bedpostdir}/nodif_brain_mask.nii.gz
+		cp ${dir_dti}/${trunc_dti}.bvec ${bedpostdir}/bvecs
+		cp ${dir_dti}/${trunc_dti}.bval ${bedpostdir}/bvals
+
+		echo Real Bedpost
+		echo " " >> $LOGFILE
+		echo "bedpostx ${bedpostdir}" | tee -a $LOGFILE
+		bedpostx ${bedpostdir} 
+	fi
+	
+fi
+ 
+#####################################################################################################################################
+##
+## PROCESSING HI RES STRUCTURAL AND CALCULATING REGISTRATION
+##
+#####################################################################################################################################
+
+
+
+if [ $PROCESS_ANAT -eq 1 -a $TESTMODE -eq 0 ]; then
+  echo "processing STRUCT..."
+  cd ${dir_anat}
+  echo "Running bet with -B option (for neck cleanup) on the grid."
+  bet ${f_anat} ${dir_anat}/${trunc_anat}_brain -B -f 0.33
+     
+      # note -f=3.3 was confirmed to work well with Trio and Sonata MPRAGES -DG 1/27/09
+      # also note that this job used to be submitted to the grid b/c it takes a long time to compute
+     #### wait until BET completes before terminating script
+  echo -n "Waiting for brain extraction to finish..."
+  echo "done."
+  echo -e "bet ${f_anat} ${dir_anat}/${trunc_anat}_brain -B -f 0.33 - complete:" `date` | tee -a $LOGFILE
+  
+  ################################
+  #########registration###########
+  ################################
+	echo ------------------------------
+	echo !!!! RUNNING REGISTRATION !!!!
+	echo ------------------------------
+	if [ -d ${dir_dti}/reg ]; then 
+		echo "reg already exists" 
+	else 
+		mkdir ${dir_dti}/reg
+	fi
+
+
+
+	## 1. Copy required images into reg directory
+	### copy anatomical
+	cp ${dir_anat}/${trunc_anat}_brain.nii.gz  ${dir_dti}/reg/highres.nii.gz
+	### copy standard
+	cp ${FSLDIR}/data/standard/MNI152_T1_2mm.nii.gz  ${dir_dti}/reg/standard.nii.gz
+	### copy example func created earlier
+	fslmaths ${dir_dti}/b0_${trunc_dti}.nii.gz -mul ${dir_dti}/b0mask_${trunc_dti}_mask.nii.gz ${dir_dti}/reg/example_dti.nii.gz
+
+	## 2. cd into reg directory
+	cd ${dir_dti}/reg/
+
+	## 3. DTI->T1
+	## You may want to change some of the options
+	flirt -ref highres -in example_dti -out example_dti2highres -omat example_dti2highres.mat -cost corratio -dof 6 -interp trilinear
+	# Create mat file for conversion from subject's anatomical to functional
+	convert_xfm -inverse -omat highres2example_dti.mat example_dti2highres.mat
+
+	## 4. T1->STANDARD
+	## NOTE THAT THIS IS Linear registration, you may want to use FNIRT (non-linear)
+	flirt -ref standard -in highres -out highres2standard -omat highres2standard.mat -cost corratio -searchcost corratio -dof 12 -interp trilinear
+	## Create mat file for conversion from standard to high res
+	convert_xfm -inverse -omat standard2highres.mat highres2standard.mat
+
+	## 5. FUNC->STANDARD
+	## Create mat file for registration of functional to standard
+	convert_xfm -omat example_dti2standard.mat -concat highres2standard.mat example_dti2highres.mat
+	## apply registration
+	flirt -ref standard -in example_dti -out example_dti2standard -applyxfm -init example_dti2standard.mat -interp trilinear
+	## Create inverse mat file for registration of standard to functional
+	convert_xfm -inverse -omat standard2example_dti.mat example_dti2standard.mat
+fi
+
+
+
+
+
+
+
+
+
+else 
+	echo DTI file for ${f_dti} does not exist-- moving on
+
+fi

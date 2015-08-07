@@ -1,0 +1,40 @@
+#organizer with symboolic links
+BASEDIR=/nethome/amiklos/work/ECT/CON/analysis_rs
+SCRLOC=/nethome/amiklos/public_html/myscript/virtualbrain/Pipeline/Miklos_pipelines
+DATA=/data/3T
+
+
+
+while read line
+ 	do
+ 	line=`echo $line | dos2unix`
+	
+
+	#IDA=236_01_21986
+	#IDB=236_01_21986
+	#RUNA=0004
+	#RUND=0009
+	TA=`echo $line | cut -d "," -f 2`
+	TB=`echo $line | cut -d "," -f 4`
+	
+	IDA=`echo ${TA%_*}`
+	IDB=`echo ${TB%_*}`
+	tRUNA=`echo $line | cut -d "," -f 3`
+	tRUND=`echo $line | cut -d "," -f 5`
+	RUNA=$(printf %04d ${tRUNA})
+	RUND=$(printf %04d ${tRUND})
+
+	SUBDIRA="${BASEDIR}/${IDA}_${RUNA}"
+	SUBDIRB="${BASEDIR}/${IDB}_${RUND}"
+	
+	
+	RSFMRIIMAGE=`echo ${SUBDIRB}/rsfmri/rsfmri_${IDB}_${RUND}.nii.gz`
+	ANATIMAGE=`echo ${SUBDIRB}/anat/anat_${IDA}_${RUNA}_co.nii.gz`
+	
+	#${SCRLOC}/run_project_dti -d ${DTIIMAGE} -a ${ANATIMAGE} -w -c -x 
+	#echo -n "${SCRLOC}/run_project_dti -d ${DTIIMAGE} -a ${ANATIMAGE} -w -c -x" | when #runwhenready
+	#echo -n "${SCRLOC}/run_project_dti -d ${DTIIMAGE} -a ${ANATIMAGE} -w -c -x" | qsub
+	#me gnincs qsub-ba rakva
+	echo -n "/nethome/amiklos/public_html/myscript/virtualbrain/Pipeline/Miklos_pipelines/run_project_111  -r ${RSFMRIIMAGE} -a ${ANATIMAGE}  -w -c -x -D -I -R  -A  -S" | qsub
+	
+	done <$1

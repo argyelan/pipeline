@@ -1,0 +1,59 @@
+#!/bin/bash
+
+#organizer with symboolic links
+BASEDIR=/nethome/amiklos/work/ECT/CON/analysis_dti
+DATA=/data/3T
+
+
+
+while read line
+ 	do
+ 	line=`echo $line | dos2unix`
+	
+
+	#IDA=236_01_21986
+	#IDB=236_01_21986
+	#RUNA=0004
+	#RUND=0009
+	TA=`echo $line | cut -d "," -f 2`
+	TB=`echo $line | cut -d "," -f 4`
+	
+	IDA=`echo ${TA%_*}`
+	IDB=`echo ${TB%_*}`
+	tRUNA=`echo $line | cut -d "," -f 3`
+	tRUND=`echo $line | cut -d "," -f 5`
+	RUNA=$(printf %04d ${tRUNA})
+	RUND=$(printf %04d ${tRUND})
+
+	SUBDIRA="${BASEDIR}/${IDA}_${RUNA}"
+	SUBDIRB="${BASEDIR}/${IDB}_${RUND}"
+
+	if [ -d ${SUBDIRB}/dti ]; then 
+		echo "dti already exists in ${IDB}" 
+	else 
+		mkdir -p ${SUBDIRB}/dti
+		mkdir -p ${SUBDIRB}/anat
+		mkdir -p ${SUBDIRB}/raw/dti
+		mkdir -p ${SUBDIRB}/raw/anat
+	
+		echo "cp -s ${DATA}/${IDA}/dicom/${RUNA}/* ${SUBDIRB}/raw/anat/"
+		cp -s ${DATA}/${IDA}/dicom/${RUNA}/* ${SUBDIRB}/raw/anat/
+
+		dcm2nii ${SUBDIRB}/raw/anat/*.dcm #it writes out where the dicom files are and not where you run the dcm2nii from
+
+		
+		cp ${SUBDIRB}/raw/anat/c*nii.gz ${SUBDIRB}/anat/anat_${IDA}_${RUNA}_co.nii.gz #this will be used...
+		cp ${SUBDIRB}/raw/anat/o*nii.gz ${SUBDIRB}/raw/anat/anat_${IDA}_${RUNA}_o.nii.gz
+
+		echo "cp -s ${DATA}/${IDB}/dicom/${RUND}/* ${SUBDIRB}/raw/dti/"
+		cp -s ${DATA}/${IDB}/dicom/${RUND}/* ${SUBDIRB}/raw/dti/	
+		dcm2nii ${SUBDIRB}/raw/dti/*.dcm
+
+		cp ${SUBDIRB}/raw/dti/*.nii.gz ${SUBDIRB}/dti/dti_${IDB}_${RUND}.nii.gz
+		cp ${SUBDIRB}/raw/dti/*.bvec ${SUBDIRB}/dti/dti_${IDB}_${RUND}.bvec
+		cp ${SUBDIRB}/raw/dti/*.bval ${SUBDIRB}/dti/dti_${IDB}_${RUND}.bval
+	
+		echo "Finished ${IDB}"
+	fi
+
+done < $1
